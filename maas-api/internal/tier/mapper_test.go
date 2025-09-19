@@ -11,9 +11,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+// Use unified test constants from fixtures
 const (
-	testNamespace = "test-namespace"
-	testTenant    = "test-tenant"
+	testNamespace = fixtures.TestNamespace
+	testTenant    = fixtures.TestTenant
 )
 
 func TestMapper_GetTierForGroups(t *testing.T) {
@@ -21,7 +22,7 @@ func TestMapper_GetTierForGroups(t *testing.T) {
 
 	configMap := fixtures.CreateTierConfigMap(testNamespace)
 
-	clientset := fake.NewSimpleClientset([]runtime.Object{configMap}...)
+	clientset := fake.NewClientset([]runtime.Object{configMap}...)
 	mapper := tier.NewMapper(clientset, testTenant, testNamespace)
 
 	tests := []struct {
