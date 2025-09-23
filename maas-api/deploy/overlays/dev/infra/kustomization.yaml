@@ -2,9 +2,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 metadata:
-  name: maas-api-dev-infra
+  name: maas-api-all-infra
 
 resources:
-- kuadrant.yaml
-- gateway-api.yaml
-- httproute.yaml
+- ../../../infra/kuadrant
+- networking
