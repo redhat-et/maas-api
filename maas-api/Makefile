@@ -4,7 +4,7 @@
 CONTAINER_ENGINE ?= podman
 
 # Image settings
-REPO ?= ghcr.io/your-org/maas-api
+REPO ?= quay.io/opendatahub/maas-api
 TAG ?= latest
 FULL_IMAGE ?= $(REPO):$(TAG)
 
