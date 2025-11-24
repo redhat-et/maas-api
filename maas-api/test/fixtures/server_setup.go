@@ -2,6 +2,7 @@ package fixtures
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -12,8 +13,6 @@ import (
 	kservefakev1alpha1 "github.com/kserve/kserve/pkg/client/clientset/versioned/typed/serving/v1alpha1/fake"
 	kserveclientv1beta1 "github.com/kserve/kserve/pkg/client/clientset/versioned/typed/serving/v1beta1"
 	kservefakev1beta1 "github.com/kserve/kserve/pkg/client/clientset/versioned/typed/serving/v1beta1/fake"
-	"github.com/opendatahub-io/maas-billing/maas-api/internal/tier"
-	"github.com/opendatahub-io/maas-billing/maas-api/internal/token"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,9 +21,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/opendatahub-io/maas-billing/maas-api/internal/tier"
+	"github.com/opendatahub-io/maas-billing/maas-api/internal/token"
 )
 
-// TokenReviewScenario defines how TokenReview should respond for a given token
+// TokenReviewScenario defines how TokenReview should respond for a given token.
 type TokenReviewScenario struct {
 	Authenticated bool
 	UserInfo      authv1.UserInfo
@@ -32,7 +34,7 @@ type TokenReviewScenario struct {
 	ErrorMessage  string
 }
 
-// TestServerConfig holds configuration for test server setup
+// TestServerConfig holds configuration for test server setup.
 type TestServerConfig struct {
 	WithTierConfig bool
 	TokenScenarios map[string]TokenReviewScenario
@@ -41,21 +43,21 @@ type TestServerConfig struct {
 	TestTenant     string
 }
 
-// TestClients holds the test clients
+// TestClients holds the test clients.
 type TestClients struct {
 	K8sClient      kubernetes.Interface
 	KServeV1Beta1  kserveclientv1beta1.ServingV1beta1Interface
 	KServeV1Alpha1 kserveclientv1alpha1.ServingV1alpha1Interface
 }
 
-// TestComponents holds common test components
+// TestComponents holds common test components.
 type TestComponents struct {
 	Manager   *token.Manager
 	Reviewer  *token.Reviewer
 	Clientset *k8sfake.Clientset
 }
 
-// SetupTestServer creates a test server with base configuration
+// SetupTestServer creates a test server with base configuration.
 func SetupTestServer(_ *testing.T, config TestServerConfig) (*gin.Engine, *TestClients) {
 	gin.SetMode(gin.TestMode)
 
@@ -119,7 +121,7 @@ func SetupTestServer(_ *testing.T, config TestServerConfig) (*gin.Engine, *TestC
 	return gin.New(), clients
 }
 
-// StubTokenProviderAPIs creates common test components for token tests
+// StubTokenProviderAPIs creates common test components for token tests.
 func StubTokenProviderAPIs(_ *testing.T, withTierConfig bool, tokenScenarios map[string]TokenReviewScenario) (*token.Manager, *token.Reviewer, *k8sfake.Clientset) {
 	var objects []runtime.Object
 
@@ -149,7 +151,7 @@ func StubTokenProviderAPIs(_ *testing.T, withTierConfig bool, tokenScenarios map
 	return manager, reviewer, fakeClient
 }
 
-// SetupTestRouter creates a test router with token endpoints
+// SetupTestRouter creates a test router with token endpoints.
 func SetupTestRouter(manager *token.Manager, reviewer *token.Reviewer) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -166,7 +168,7 @@ func SetupTestRouter(manager *token.Manager, reviewer *token.Reviewer) *gin.Engi
 	return router
 }
 
-// SetupTierTestRouter creates a test router for tier endpoints
+// SetupTierTestRouter creates a test router for tier endpoints.
 func SetupTierTestRouter(mapper *tier.Mapper) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -177,7 +179,7 @@ func SetupTierTestRouter(mapper *tier.Mapper) *gin.Engine {
 	return router
 }
 
-// CreateTestMapper creates a tier mapper for testing
+// CreateTestMapper creates a tier mapper for testing.
 func CreateTestMapper(withConfigMap bool) *tier.Mapper {
 	var objects []runtime.Object
 
@@ -190,12 +192,21 @@ func CreateTestMapper(withConfigMap bool) *tier.Mapper {
 	return tier.NewMapper(clientset, TestTenant, TestNamespace)
 }
 
-// StubTokenReview sets up TokenReview API mocking for authentication tests
+// StubTokenReview sets up TokenReview API mocking for authentication tests.
 func StubTokenReview(clientset kubernetes.Interface, scenarios map[string]TokenReviewScenario) {
-	fakeClient := clientset.(*k8sfake.Clientset)
-	fakeClient.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
-		createAction := action.(k8stesting.CreateAction)
-		tokenReview := createAction.GetObject().(*authv1.TokenReview)
+	fakeClient, ok := clientset.(*k8sfake.Clientset)
+	if !ok {
+		panic("StubTokenReview: clientset is not a *k8sfake.Clientset")
+	}
+	fakeClient.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(k8stesting.CreateAction)
+		if !ok {
+			return true, nil, fmt.Errorf("expected CreateAction, got %T", action)
+		}
+		tokenReview, ok := createAction.GetObject().(*authv1.TokenReview)
+		if !ok {
+			return true, nil, fmt.Errorf("expected TokenReview, got %T", createAction.GetObject())
+		}
 		tokenSpec := tokenReview.Spec.Token
 
 		scenario, exists := scenarios[tokenSpec]
@@ -219,12 +230,18 @@ func StubTokenReview(clientset kubernetes.Interface, scenarios map[string]TokenR
 		return true, tokenReview, nil
 	})
 
-	fakeClient.PrependReactor("create", "serviceaccounts/token", func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
-		createAction := action.(k8stesting.CreateAction)
-		tokenRequest := createAction.GetObject().(*authv1.TokenRequest)
+	fakeClient.PrependReactor("create", "serviceaccounts/token", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(k8stesting.CreateAction)
+		if !ok {
+			return true, nil, fmt.Errorf("expected CreateAction, got %T", action)
+		}
+		tokenRequest, ok := createAction.GetObject().(*authv1.TokenRequest)
+		if !ok {
+			return true, nil, fmt.Errorf("expected TokenRequest, got %T", createAction.GetObject())
+		}
 
 		tokenRequest.Status = authv1.TokenRequestStatus{
-			Token:               "mock-service-account-token-" + fmt.Sprintf("%d", time.Now().Unix()),
+			Token:               "mock-service-account-token-" + strconv.FormatInt(time.Now().Unix(), 10),
 			ExpirationTimestamp: metav1.NewTime(time.Now().Add(time.Hour)),
 		}
 
