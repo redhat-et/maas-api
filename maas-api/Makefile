@@ -9,11 +9,17 @@ GOOS   ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 GO_STRICTFIPS ?= false
 
-CGO_ENABLED  ?= 0
+CGO_ENABLED  ?= 1
+
 ifeq ($(GO_STRICTFIPS),true)
   GOEXPERIMENT ?= strictfipsruntime
-  CGO_ENABLED  = 1
 endif
+
+# temp commenting to make main image working while we still have sqlite, and working on better solution
+# ifeq ($(GO_STRICTFIPS),true)
+#   GOEXPERIMENT ?= strictfipsruntime
+#   CGO_ENABLED  = 1
+# endif
 
 GO_ENV := GOOS=$(GOOS) GOARCH=$(GOARCH)
 ifdef GOEXPERIMENT
