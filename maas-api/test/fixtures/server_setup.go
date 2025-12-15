@@ -24,9 +24,9 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 	gatewaylisters "sigs.k8s.io/gateway-api/pkg/client/listers/apis/v1"
 
-	"github.com/opendatahub-io/maas-billing/maas-api/internal/api_keys"
-	"github.com/opendatahub-io/maas-billing/maas-api/internal/tier"
-	"github.com/opendatahub-io/maas-billing/maas-api/internal/token"
+	"github.com/opendatahub-io/models-as-a-service/maas-api/internal/api_keys"
+	"github.com/opendatahub-io/models-as-a-service/maas-api/internal/tier"
+	"github.com/opendatahub-io/models-as-a-service/maas-api/internal/token"
 )
 
 func ToRuntimeObjects[T runtime.Object](items []T) []runtime.Object {
