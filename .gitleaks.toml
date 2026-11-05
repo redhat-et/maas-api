@@ -1,0 +1,5 @@
+[allowlist]
+description = "Upstream vendored documentation examples"
+paths = [
+  '''maas-api/vendor/.*''',
+]

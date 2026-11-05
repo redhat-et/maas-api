@@ -30,3 +30,10 @@ the upstream default behavior available.
 
 EnMaaS-specific changes should remain inside `maas-api/` and stay compatible
 with cherry-picking to the upstream repository.
+
+## Secret scanning
+
+`maas-api/vendor/` contains upstream dependency documentation, including
+example database connection strings. These are not credentials and are excluded
+from repository secret scanning. First-party source under `maas-api/` remains
+in scope for secret scanning.
