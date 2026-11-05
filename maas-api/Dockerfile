@@ -10,12 +10,11 @@ ARG TARGETARCH
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
 COPY . .
 
 USER root
 
-RUN CGO_ENABLED=${CGO_ENABLED} GOEXPERIMENT=strictfipsruntime GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -trimpath -ldflags="-s -w" -o maas-api ./cmd/
+RUN CGO_ENABLED=${CGO_ENABLED} GOEXPERIMENT=strictfipsruntime GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -mod=vendor -a -trimpath -ldflags="-s -w" -o maas-api ./cmd/
 
 FROM --platform=$TARGETPLATFORM registry.access.redhat.com/ubi9/ubi-minimal:latest
 

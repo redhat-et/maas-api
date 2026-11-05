@@ -17,6 +17,14 @@ at commit `5fc83feb` (`feat: support standalone api key mode`).
 The EnMaaS deployment profile is being added on top of that base while keeping
 the upstream default behavior available.
 
+## EnMaaS profile
+
+Set `MAAS_DEPLOYMENT_PROFILE=enmaas` with
+`MAAS_SUBSCRIPTION_MODE=standalone` to run without Kubernetes/CRD access. This
+profile reads `DATABASE_URL` or `DB_CONNECTION_URL` from the environment,
+serves plain HTTP metrics, and exposes only the EnMaaS key-management API.
+The default `upstream` profile preserves the full old maas-api behavior.
+
 ## Layout
 
 - `maas-api/` — Go service, schema, API contract, and container build

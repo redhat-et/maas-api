@@ -29,6 +29,13 @@ const (
 	SubscriptionModeStandalone SubscriptionMode = "standalone"
 )
 
+type DeploymentProfile string
+
+const (
+	DeploymentProfileUpstream DeploymentProfile = "upstream"
+	DeploymentProfileEnMaaS   DeploymentProfile = "enmaas"
+)
+
 type Config struct {
 	Name      string
 	Namespace string
@@ -38,6 +45,7 @@ type Config struct {
 
 	MaaSSubscriptionNamespace string
 	SubscriptionMode          SubscriptionMode
+	DeploymentProfile         DeploymentProfile
 
 	// TenantName is the tenant identifier for this maas-api instance.
 	// Set to "models-as-a-service" for default tenant, or AITenant name (e.g., "redteam") for other tenants.
@@ -77,6 +85,10 @@ type Config struct {
 	// SARCacheMaxSize is the maximum number of entries in the SAR admin-check cache.
 	// Bounds memory usage under high-cardinality user traffic. Default: 8192.
 	SARCacheMaxSize int
+
+	// TrustedAdminUsers are the usernames allowed to perform admin key operations
+	// in the EnMaaS deployment profile. The upstream profile uses SAR instead.
+	TrustedAdminUsers []string
 
 	// LastUsedDebounceSecs is the minimum number of seconds between consecutive
 	// last_used_at writes to Postgres for the same API key. When many requests
@@ -123,7 +135,9 @@ func Load() *Config {
 	accessCheckTimeoutSeconds, _ := env.GetInt("ACCESS_CHECK_TIMEOUT_SECONDS", 15)
 	sarCacheMaxSize, _ := env.GetInt("SAR_CACHE_MAX_SIZE", constant.DefaultSARCacheMaxSize)
 	lastUsedDebounceSecs, _ := env.GetInt("LAST_USED_DEBOUNCE_SECS", 60)
+	trustedAdminUsers := splitNonEmpty(env.GetString("MAAS_ADMIN_USERS", "admin"), ",")
 	subscriptionMode := SubscriptionMode(env.GetString("MAAS_SUBSCRIPTION_MODE", string(SubscriptionModeEnforced)))
+	deploymentProfile := DeploymentProfile(env.GetString("MAAS_DEPLOYMENT_PROFILE", string(DeploymentProfileUpstream)))
 	metricsPort, _ := env.GetInt("METRICS_PORT", constant.DefaultMetricsPort)
 	metricsSecure, _ := env.GetBool("METRICS_SECURE", true)
 	metricsCertDir := env.GetString("METRICS_CERT_DIR", constant.DefaultMetricsCertDir)
@@ -151,6 +165,7 @@ func Load() *Config {
 		GatewayNamespace:          env.GetString("GATEWAY_NAMESPACE", constant.DefaultGatewayNamespace),
 		MaaSSubscriptionNamespace: env.GetString("MAAS_SUBSCRIPTION_NAMESPACE", constant.DefaultMaaSSubscriptionNamespace),
 		SubscriptionMode:          subscriptionMode,
+		DeploymentProfile:         deploymentProfile,
 		TenantName:                tenantName,
 		AITenantName:              aitenantName,
 		AITenantNamespace:         aitenantNamespace,
@@ -158,11 +173,12 @@ func Load() *Config {
 		Secure:                    secure,
 		TLS:                       loadTLSConfig(),
 		DebugMode:                 debugMode,
-		DBConnectionURL:           "", // Loaded from K8s secret via LoadDatabaseURL()
+		DBConnectionURL:           strings.TrimSpace(env.GetString("DATABASE_URL", env.GetString("DB_CONNECTION_URL", ""))),
 		APIKeyMaxExpirationDays:   maxExpirationDays,
 		AccessCheckTimeoutSeconds: accessCheckTimeoutSeconds,
 		SARCacheMaxSize:           sarCacheMaxSize,
 		LastUsedDebounceSecs:      lastUsedDebounceSecs,
+		TrustedAdminUsers:         trustedAdminUsers,
 		MetricsPort:               metricsPort,
 		MetricsSecure:             metricsSecure,
 		MetricsCertDir:            metricsCertDir,
@@ -212,7 +228,7 @@ func (c *Config) Validate() error {
 
 	// Validate required fields
 	if c.DBConnectionURL == "" {
-		return errors.New("db connection URL is required (loaded from K8s secret 'maas-db-config')")
+		return errors.New("db connection URL is required (DATABASE_URL/DB_CONNECTION_URL or maas-db-config secret)")
 	}
 
 	if err := c.TLS.validate(); err != nil {
@@ -245,6 +261,15 @@ func (c *Config) Validate() error {
 	if c.SubscriptionMode != SubscriptionModeEnforced && c.SubscriptionMode != SubscriptionModeStandalone {
 		return fmt.Errorf("MAAS_SUBSCRIPTION_MODE %q is invalid: must be %q or %q", c.SubscriptionMode, SubscriptionModeEnforced, SubscriptionModeStandalone)
 	}
+	if c.DeploymentProfile == "" {
+		c.DeploymentProfile = DeploymentProfileUpstream
+	}
+	if c.DeploymentProfile != DeploymentProfileUpstream && c.DeploymentProfile != DeploymentProfileEnMaaS {
+		return fmt.Errorf("MAAS_DEPLOYMENT_PROFILE %q is invalid: must be %q or %q", c.DeploymentProfile, DeploymentProfileUpstream, DeploymentProfileEnMaaS)
+	}
+	if c.DeploymentProfile == DeploymentProfileEnMaaS && c.SubscriptionMode != SubscriptionModeStandalone {
+		return errors.New("MAAS_DEPLOYMENT_PROFILE=enmaas requires MAAS_SUBSCRIPTION_MODE=standalone")
+	}
 	if errs := validation.IsDNS1123Label(c.MaaSSubscriptionNamespace); len(errs) > 0 {
 		return fmt.Errorf("MAAS_SUBSCRIPTION_NAMESPACE %q is invalid: %v", c.MaaSSubscriptionNamespace, errs)
 	}
@@ -266,12 +291,15 @@ func (c *Config) Validate() error {
 	if c.LastUsedDebounceSecs < 0 {
 		return errors.New("LAST_USED_DEBOUNCE_SECS must be greater than or equal to 0")
 	}
+	if c.IsEnMaaSProfile() && len(c.TrustedAdminUsers) == 0 {
+		return errors.New("MAAS_ADMIN_USERS must contain at least one username in the enmaas profile")
+	}
 
 	if c.MetricsPort < 1 || c.MetricsPort > 65535 {
 		return errors.New("METRICS_PORT must be between 1 and 65535")
 	}
 
-	if c.MetricsSecure && strings.TrimSpace(c.MetricsCertDir) == "" {
+	if c.MetricsSecure && !c.IsEnMaaSProfile() && strings.TrimSpace(c.MetricsCertDir) == "" {
 		return errors.New("METRICS_CERT_DIR must be non-empty when METRICS_SECURE is true")
 	}
 
@@ -311,9 +339,24 @@ func (c *Config) PrintDeprecationWarnings(log *logger.Logger) {
 	})
 }
 
+func splitNonEmpty(value, separator string) []string {
+	var out []string
+	for _, part := range strings.Split(value, separator) {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // MetricsAddress returns the listen address for the metrics server.
 func (c *Config) MetricsAddress() string {
 	return fmt.Sprintf(":%d", c.MetricsPort)
+}
+
+// IsEnMaaSProfile reports whether the minimal EnMaaS deployment profile is active.
+func (c *Config) IsEnMaaSProfile() bool {
+	return c.DeploymentProfile == DeploymentProfileEnMaaS
 }
 
 // LoadDatabaseURL reads the database connection URL from the Kubernetes secret.

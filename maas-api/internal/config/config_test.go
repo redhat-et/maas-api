@@ -82,6 +82,10 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 		"DEBUG_MODE", "GATEWAY_NAME", "SECURE", "INSTANCE_NAME",
 		"NAMESPACE", "GATEWAY_NAMESPACE", "ADDRESS",
 		"MAAS_SUBSCRIPTION_MODE",
+		"MAAS_DEPLOYMENT_PROFILE",
+		"MAAS_ADMIN_USERS",
+		"DATABASE_URL",
+		"DB_CONNECTION_URL",
 		"PORT",
 		"TLS_CERT", "TLS_KEY", "TLS_SELF_SIGNED",
 		"METRICS_PORT", "METRICS_SECURE", "METRICS_CERT_DIR",
@@ -115,6 +119,27 @@ func TestLoad_SubscriptionMode(t *testing.T) {
 	cfg := Load()
 	if cfg.SubscriptionMode != SubscriptionModeStandalone {
 		t.Fatalf("expected standalone subscription mode, got %q", cfg.SubscriptionMode)
+	}
+}
+
+func TestLoad_DeploymentProfile(t *testing.T) {
+	resetGlobalFlags()
+	t.Setenv("MAAS_DEPLOYMENT_PROFILE", string(DeploymentProfileEnMaaS))
+	t.Setenv("MAAS_ADMIN_USERS", "admin, oncall")
+	t.Setenv("DATABASE_URL", "postgresql://localhost/test")
+
+	cfg := Load()
+	if cfg.DeploymentProfile != DeploymentProfileEnMaaS {
+		t.Fatalf("expected enmaas profile, got %q", cfg.DeploymentProfile)
+	}
+	if !cfg.IsEnMaaSProfile() {
+		t.Fatal("expected IsEnMaaSProfile true")
+	}
+	if got := strings.Join(cfg.TrustedAdminUsers, ","); got != "admin,oncall" {
+		t.Fatalf("unexpected trusted admins %q", got)
+	}
+	if cfg.DBConnectionURL != "postgresql://localhost/test" {
+		t.Fatalf("unexpected DB URL %q", cfg.DBConnectionURL)
 	}
 }
 
@@ -219,6 +244,48 @@ func TestValidate(t *testing.T) {
 				MetricsPort:               9090,
 				MaaSSubscriptionNamespace: "models-as-a-service",
 				TenantName:                "test-tenant",
+			},
+		},
+		{
+			name: "enmaas profile requires standalone subscription mode",
+			cfg: Config{
+				DBConnectionURL:           "postgresql://localhost/test",
+				DeploymentProfile:         DeploymentProfileEnMaaS,
+				SubscriptionMode:          SubscriptionModeEnforced,
+				APIKeyMaxExpirationDays:   30,
+				AccessCheckTimeoutSeconds: 15,
+				MetricsPort:               9090,
+				MaaSSubscriptionNamespace: "models-as-a-service",
+				TenantName:                "test-tenant",
+				TrustedAdminUsers:         []string{"admin"},
+			},
+			expectError: "requires MAAS_SUBSCRIPTION_MODE=standalone",
+		},
+		{
+			name: "invalid deployment profile returns error",
+			cfg: Config{
+				DBConnectionURL:           "postgresql://localhost/test",
+				DeploymentProfile:         DeploymentProfile("invalid"),
+				APIKeyMaxExpirationDays:   30,
+				AccessCheckTimeoutSeconds: 15,
+				MetricsPort:               9090,
+				MaaSSubscriptionNamespace: "models-as-a-service",
+				TenantName:                "test-tenant",
+			},
+			expectError: "MAAS_DEPLOYMENT_PROFILE",
+		},
+		{
+			name: "valid enmaas profile",
+			cfg: Config{
+				DBConnectionURL:           "postgresql://localhost/test",
+				DeploymentProfile:         DeploymentProfileEnMaaS,
+				SubscriptionMode:          SubscriptionModeStandalone,
+				APIKeyMaxExpirationDays:   30,
+				AccessCheckTimeoutSeconds: 15,
+				MetricsPort:               9090,
+				MaaSSubscriptionNamespace: "models-as-a-service",
+				TenantName:                "test-tenant",
+				TrustedAdminUsers:         []string{"admin"},
 			},
 		},
 		{

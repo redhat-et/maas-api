@@ -74,15 +74,21 @@ func serve() error {
 
 	metricsRegistry := prometheus.NewRegistry()
 
-	cluster, err := config.NewClusterConfig(cfg.Namespace, cfg.MaaSSubscriptionNamespace, constant.DefaultResyncPeriod, cfg.SARCacheMaxSize, metricsRegistry, log)
-	if err != nil {
-		return fmt.Errorf("failed to create cluster config: %w", err)
-	}
+	var cluster *config.ClusterConfig
+	var err error
+	if cfg.IsEnMaaSProfile() {
+		log.Info("Using EnMaaS profile: Kubernetes and CRD startup disabled")
+	} else {
+		cluster, err = config.NewClusterConfig(cfg.Namespace, cfg.MaaSSubscriptionNamespace, constant.DefaultResyncPeriod, cfg.SARCacheMaxSize, metricsRegistry, log)
+		if err != nil {
+			return fmt.Errorf("failed to create cluster config: %w", err)
+		}
 
-	// Load database connection URL from Kubernetes secret
-	log.Info("Loading database connection URL from secret...")
-	if err := cfg.LoadDatabaseURL(ctx, cluster.ClientSet); err != nil {
-		return fmt.Errorf("failed to load database URL: %w", err)
+		// Load database connection URL from Kubernetes secret for upstream behavior.
+		log.Info("Loading database connection URL from secret...")
+		if err := cfg.LoadDatabaseURL(ctx, cluster.ClientSet); err != nil {
+			return fmt.Errorf("failed to load database URL: %w", err)
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -130,18 +136,28 @@ func serve() error {
 	}
 	router.Use(metrics.NewMiddleware(metricsRecorder, cfg.TenantName))
 
-	profileMinVersion, profileCipherSuites, tlsErr := setupTLSProfile(ctx, log, cfg, cluster, cancel)
-	if tlsErr != nil {
-		return fmt.Errorf("failed to set up TLS profile: %w", tlsErr)
+	var profileMinVersion uint16
+	var profileCipherSuites []uint16
+	if cluster != nil {
+		profileMinVersion, profileCipherSuites, err = setupTLSProfile(ctx, log, cfg, cluster, cancel)
+		if err != nil {
+			return fmt.Errorf("failed to set up TLS profile: %w", err)
+		}
 	}
 
-	// Start metrics server (HTTPS + authn/authz when METRICS_SECURE=true)
+	metricsSecure := cfg.MetricsSecure && !cfg.IsEnMaaSProfile()
+	var restConfig *rest.Config
+	if cluster != nil {
+		restConfig = cluster.RESTConfig()
+	}
+
+	// Start metrics server (HTTPS + authn/authz when METRICS_SECURE=true).
 	metricsSrv, err := metrics.NewMetricsServer(metrics.ServerOptions{
 		Addr:                cfg.MetricsAddress(),
 		Reg:                 metricsRegistry,
-		Secure:              cfg.MetricsSecure,
+		Secure:              metricsSecure,
 		CertDir:             cfg.MetricsCertDir,
-		RESTConfig:          cluster.RESTConfig(),
+		RESTConfig:          restConfig,
 		ProfileMinVersion:   profileMinVersion,
 		ProfileCipherSuites: profileCipherSuites,
 	})
@@ -150,7 +166,7 @@ func serve() error {
 	}
 	metricsErr := make(chan error, 1)
 	go func() {
-		log.Info("Metrics server starting", "address", cfg.MetricsAddress(), "secure", cfg.MetricsSecure)
+		log.Info("Metrics server starting", "address", cfg.MetricsAddress(), "secure", metricsSecure)
 		metricsErr <- metrics.ListenAndServe(metricsSrv)
 	}()
 
@@ -171,7 +187,11 @@ func serve() error {
 		}
 	}()
 
-	if err = registerHandlers(ctx, log, router, cfg, cluster, store, metricsRecorder); err != nil {
+	if cluster == nil {
+		if err = registerEnMaaSHandlers(ctx, log, router, cfg, store, metricsRecorder); err != nil {
+			return fmt.Errorf("failed to register EnMaaS handlers: %w", err)
+		}
+	} else if err = registerHandlers(ctx, log, router, cfg, cluster, store, metricsRecorder); err != nil {
 		return fmt.Errorf("failed to register handlers: %w", err)
 	}
 
@@ -225,6 +245,43 @@ func serve() error {
 func initStore(ctx context.Context, log *logger.Logger, cfg *config.Config) (api_keys.MetadataStore, error) { //nolint:ireturn // Returns MetadataStore interface by design.
 	log.Info("Connecting to PostgreSQL database...", "tenant", cfg.TenantName)
 	return api_keys.NewPostgresStoreFromURL(ctx, log, cfg.DBConnectionURL, cfg.TenantName)
+}
+
+func registerEnMaaSHandlers(
+	ctx context.Context,
+	log *logger.Logger,
+	router *gin.Engine,
+	cfg *config.Config,
+	store api_keys.MetadataStore,
+	metricsRecorder *metrics.PrometheusRecorder,
+) error {
+	router.GET("/health", handlers.NewHealthHandler().HealthCheck)
+
+	tokenHandler := token.NewHandler(log, cfg.TenantName)
+	apiKeyService := api_keys.NewServiceWithLogger(store, cfg, nil, log)
+	apiKeyService.StartDebounceCleanup(ctx)
+	apiKeyHandler := api_keys.NewHandler(log, apiKeyService, auth.NewTrustedAdminChecker(cfg.TrustedAdminUsers...), metricsRecorder)
+
+	tenantLogCfg := middleware.TenantLoggerConfig{
+		DefaultTenant:   cfg.TenantName,
+		TenantNamespace: cfg.MaaSSubscriptionNamespace,
+		GatewayName:     cfg.GatewayName,
+	}
+
+	optionalAuthMiddleware := []gin.HandlerFunc{tokenHandler.ExtractUserInfoOptional(), middleware.TenantLogger(log, tenantLogCfg)}
+	strictAuthMiddleware := []gin.HandlerFunc{tokenHandler.ExtractUserInfo(), middleware.TenantLogger(log, tenantLogCfg)}
+	v1Routes := router.Group("/v1")
+	apiKeyRoutes := v1Routes.Group("/api-keys", strictAuthMiddleware...)
+	apiKeyRoutes.GET("/config", apiKeyHandler.GetAPIKeyConfig)
+	apiKeyRoutes.POST("", apiKeyHandler.CreateAPIKey)
+	apiKeyRoutes.GET("/:id", apiKeyHandler.GetAPIKey)
+	apiKeyRoutes.DELETE("/:id", apiKeyHandler.RevokeAPIKey)
+	v1Routes.POST("/api-keys/search", append(optionalAuthMiddleware, apiKeyHandler.SearchAPIKeys)...)
+
+	internalRoutes := router.Group("/internal/v1")
+	internalRoutes.POST("/api-keys/validate", apiKeyHandler.ValidateAPIKeyHandler)
+
+	return nil
 }
 
 func registerHandlers(
