@@ -80,6 +80,10 @@ test: ## Run Go tests
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "Test coverage report generated: $(abspath coverage.html)"
 
+.PHONY: test-enmaas-local
+test-enmaas-local: ## Run local EnMaaS profile contract test
+	./scripts/local-enmaas-profile-test.sh
+
 ## Container image
 include container.mk
 
